@@ -3,9 +3,7 @@ import pandas as pd
 import math
 from functools import partial
 
-# ----------------------
-# Black-Scholes helpers (for optional IV inversion + analytic greeks)
-# ----------------------
+# Black-Scholes helpers
 def bs_call_price(S, K, r, sigma, tau):
     # tau in years
     if tau <= 0 or sigma <= 0:
@@ -47,9 +45,6 @@ def implied_vol_bisect(mkt_price, S, K, r, tau, q=0.0,
             lo = mid
     return 0.5*(lo+hi)
 
-# ----------------------
-# Main routine: compute features
-# ----------------------
 def compute_features(df,
                      r=0.0,
                      default_tau_minutes=None,
@@ -63,27 +58,23 @@ def compute_features(df,
     Returns: df with added columns (moneyness, cross-sectional dC/dK, d2C/dK2, temporal dC/dS, d2C/dS2, theta, optional iv & bs greeks)
     """
     df = df.copy()
-    # ensure sorting
     df['Datetime'] = pd.to_datetime(df['Datetime'])
     df = df.sort_values(['Datetime','underlying','strike']).reset_index(drop=True)
 
     # row-wise moneyness
     df['moneyness'] = np.log(df['underlying'] / df['strike'])
 
-    # allow per-row tau (in minutes) or use default
+    # allow per-row tau (in minutes)
     if 'tau_minutes' in df.columns:
         df['tau_minutes'] = df['tau_minutes'].astype(float)
     else:
         if default_tau_minutes is None:
-            # if no tau provided and not needed, set to NaN
             df['tau_minutes'] = np.nan
         else:
             df['tau_minutes'] = float(default_tau_minutes)
 
     # -------- Cross-sectional derivatives across strikes at same Datetime (dC/dK, d2C/dK2) --------
     def cross_sectional(group):
-        # group is a snapshot: all strikes for one Datetime & underlying
-        # ensure ordering by strike ascending
         group = group.sort_values('strike')
         K = group['strike'].to_numpy(dtype=float)
         C = group['call'].to_numpy(dtype=float)
@@ -96,7 +87,7 @@ def compute_features(df,
         d2C_dK2 = np.gradient(dC_dK, K)
         d2P_dK2 = np.gradient(dP_dK, K)
 
-        # we will return -dC/dK (Breeden) as call_delta_proxy and second derivative as density proxy
+        # -dC/dK (Breeden) as call_delta_proxy and second derivative as density proxy
         out = pd.DataFrame({
             'dC_dK': dC_dK,
             'd2C_dK2': d2C_dK2,
@@ -108,7 +99,6 @@ def compute_features(df,
     cross_df = df.groupby(['Datetime','underlying'], group_keys=False).apply(cross_sectional)
     df = df.join(cross_df)
 
-    # optional: proxies derived
     # call_delta_proxy ≈ -dC/dK (Breeden) ; call_gamma_proxy ≈ d2C/dK2
     df['call_delta_proxy'] = -df['dC_dK']
     df['call_gamma_proxy'] = df['d2C_dK2']
@@ -119,7 +109,6 @@ def compute_features(df,
     df['put_vega_proxy']  = df['put_gamma_proxy'] * (df['underlying']**2)
 
     # -------- Temporal derivatives across time for the SAME strike (Delta wrt S, Gamma wrt S, Theta) --------
-    # We'll compute finite differences for each (underlying, strike) chain across time
     df = df.sort_values(['underlying','strike','Datetime']).reset_index(drop=True)
 
     # helper to compute time-based finite diffs for a series
@@ -231,13 +220,5 @@ def compute_features(df,
             df['bs_vega']  = bs_vega_list
             df['bs_theta'] = bs_theta_list
 
-    # final sort back to Datetime-major order
     df = df.sort_values(['Datetime','underlying','strike']).reset_index(drop=True)
     return df
-
-# ----------------------
-# Usage example:
-# df must have columns: 'Datetime','underlying','strike','call','put'
-# call the function:
-# out = compute_features(df, r=0.0, default_tau_minutes=60, compute_analytic_greeks=True, iv_inversion_on=False)
-# ----------------------

@@ -1,6 +1,6 @@
 import pandas as pd
 import glob
-from converter import convert
+from ancilliaries.converter import convert
 
 path = r"/Users/ashu/Documents/Trader/data/NIFTY 51/*.xlsx"
 examples = []
