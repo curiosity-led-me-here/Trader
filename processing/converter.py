@@ -96,8 +96,10 @@ def save_output(df: pd.DataFrame, save_path: str):
     """Save DataFrame to Excel or CSV depending on file extension."""
     if save_path.endswith(".xlsx"):
         df.to_excel(save_path, index=False)
+        print("Saved")
     elif save_path.endswith(".csv"):
         df.to_csv(save_path, index=False)
+        print("Saved")
     else:
         raise ValueError("Save path must end with .xlsx or .csv")
 
