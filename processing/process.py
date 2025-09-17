@@ -144,10 +144,3 @@ def compute_features(df, r=0.0,
         df['implied_vol'], df['bs_delta'], df['bs_gamma'], df['bs_vega'], df['bs_theta'] = ivs, deltas, gammas, vegas, thetas
 
     return df.sort_values(['Datetime','underlying','strike']).reset_index(drop=True)
-
-
-path = r"/Users/ashu/Documents/Trader/NIFTY 50/2024-11-28_16-38-19.xlsx"
-data = convert(path)
-data = compute_features(data)
-data.index.name = None
-save_output(data, save_path=r'/Users/ashu/Downloads/output_2024-11-28_16-38-19.xlsx')
