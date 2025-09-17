@@ -3,7 +3,7 @@ import glob
 from converter import convert
 from process import compute_features
 
-path = r"/Users/ashu/Documents/Trader/NIFTY 50/*.xlsx"
+path = "..."
 examples = []
 
 for file in glob.glob(path):
