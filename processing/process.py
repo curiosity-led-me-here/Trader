@@ -148,9 +148,6 @@ def compute_features(df, r=0.0,
 
 path = r"/Users/ashu/Documents/Trader/NIFTY 50/2024-11-28_16-38-19.xlsx"
 data = convert(path)
-cutoff_time = pd.to_datetime('14:00:00').time()  # Only time component
-df = data[data['Datetime'].dt.time >= cutoff_time]
-
-data = compute_features(df)
+data = compute_features(data)
 data.index.name = None
 save_output(data, save_path=r'/Users/ashu/Downloads/output_2024-11-28_16-38-19.xlsx')

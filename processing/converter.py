@@ -46,7 +46,6 @@ def convert(file_path: str) -> pd.DataFrame:
         raise ValueError(f"'dateTime' column not found in {first_sheet}")
     
     datetime_values = df_first["dateTime"].dropna().unique()
-    
     results_per_datetime = []
     
     for dt in datetime_values:
@@ -89,6 +88,8 @@ def convert(file_path: str) -> pd.DataFrame:
     # Reorder
     order = ['Datetime', 'underlying', 'strike', 'call', 'put']
     final_df = final_df[[c for c in order if c in final_df.columns]]
+    cutoff_time = pd.to_datetime('14:00:00').time()
+    final_df = final_df[final_df['Datetime'].dt.time >= cutoff_time]
     return final_df
 
 
