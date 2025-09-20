@@ -8,148 +8,181 @@ import torch.nn as nn
 import torch.optim as optim
 from collections import deque
 import matplotlib.pyplot as plt
+from processing.converter import split
 
-class WallStreet(gym.Env):
-  def __init__(self, data, strike, feature_size=10, w_unrealised=0.3):       # (ttm_step, Strike, UL, C, P, PrevUL, PrevC, PrevP, CumUnrealisedPnL, CumRealisedPnL)
-    super().__init__()
-    self.unrealised_w = w_unrealised
-    self.data = data
-    self.strike_price = strike
-    self.feature_size = feature_size
-    self.cash = 0
-    self.prev_rew = 0
-    self.positions = []
-    self.unrealised = 0
-    self.current_step = 0
-    self.action_space = spaces.Discrete(5)        # (Buy Call, Sell Call, Buy Put, Sell Put, Hold)
-    self.observation_space = spaces.Box(low=-np.inf, high=np.inf, shape=(1, feature_size), dtype=np.float32)
-    self.current_state = None
-    self.reset()
+path = r'/Users/ashu/Documents/Trader/NIFTY 50/output_.xlsx'
+data = pd.read_excel(path)
+input_data = split(data)
+print(input_data)
 
-  def reset(self):
-    state = np.zeros(self.feature_size, dtype=np.float32)
-    self.current_step = 0
-    self.cash = 0
-    self.prev_rew = 0
-    self.unrealised = 0
-    state[1] = self.strike_price
-    self.current_state = np.array(self.current_state, dtype=np.float32)
-    self.current_state = state
-    return self.current_state, {}
 
-  def step(self, action):
-# updating current step
-    self.current_step += 1
-# episode termination logic
-    if self.current_step >= len(self.data):
-      if any(pos[0] == 'CALL' for pos in self.positions):
-        for pos in self.positions[:]:
-          if pos[0] == 'CALL':
-            reward = float(self.data.iloc[self.current_step-1].iloc[2]) - pos[1]
-            self.cash += reward
-            self.positions.remove(pos)
-      if any(pos[0] == 'PUT' for pos in self.positions):
-        for pos in self.positions[:]:
-          if pos[0] == 'PUT':
-            reward = float(self.data.iloc[self.current_step-1].iloc[3]) - pos[1]
-            self.cash += reward
-            self.positions.remove(pos)
-      self.current_state[0] = self.current_step
-      reward = self.cash
-      return self.current_state, reward, True, {}
-    reward = 0
-# ttm updation
-    self.current_state[0] = self.current_step
-# daily data extraction
-    if self.current_step != 0:
-      prev_day = self.data.iloc[self.current_step-1].to_numpy()
-      today = self.data.iloc[self.current_step].to_numpy()
-    else:
-      today = self.data.iloc[self.current_step].to_numpy()
-# current state price updation
-    for i in range(len(today)-1):
-      self.current_state[i+2] = today[i+1]
-      if self.current_state[0] != 0:
-        self.current_state[i+5] = prev_day[i+1]
-      else:
-        self.current_state[i+5] = 0
-# action-based variable updation
-    txn_cost = 5
-    error_order_penalty = 100
-    if action == 0:
-      if not any(pos[0] == 'CALL' for pos in self.positions) and not any(pos[0] == 'PUT' for pos in self.positions):
-        self.positions.append(('CALL', float(today[2])))
-      else:
-        self.cash -= error_order_penalty
-        self.current_state[9] = self.cash
-        for i in range(len(self.positions)):
-          if self.positions[i][0] == 'CALL':
-            self.unrealised = today[2] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-          elif self.positions[i][0] == 'PUT':
-            self.unrealised = today[3] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-    elif action == 1:
-      if any(pos[0] == 'CALL' for pos in self.positions):
-        for pos in self.positions[:]:
-          if pos[0] == 'CALL':
-            reward = today[2] - pos[1]
-            self.cash += reward - txn_cost
-            self.positions.remove(pos)
-            self.current_state[9] = self.cash
-            self.current_state[8] = 0.0
-            #break
+class Wallstreet(gym.Env):
+    def __init__(self, dataframes, transaction_cost=0.01):
+        super().__init__()
+        self.dataframes = dataframes   # list of option chain snapshots
+        self.transaction_cost = transaction_cost
+        self.cum_pnl = 0
+        
+        # fixed strikes across all timesteps
+        self.strikes = sorted(set.union(*[set(df['strike']) for df in dataframes]))
+        self.strike_to_idx = {k: i for i, k in enumerate(self.strikes)}
+        
+        # two types: Call (0), Put (1)
+        self.n_strikes = len(self.strikes)
+        self.n_types = 2
+        
+        # action space = strike index + type, or flat
+        self.action_space = gym.spaces.Discrete(self.n_strikes * self.n_types + 1)
+        
+        # observation: (n_strikes, 2, features)
+        # features = [lnMoneyness, price]
+        self.observation_space = gym.spaces.Box(
+            low=-np.inf, high=np.inf, 
+            shape=(self.n_strikes, self.n_types, 2), 
+            dtype=np.float32
+        )
+        
+    def reset(self):
+        self.t = 0
+        self.position = None  # (strike_idx, type_idx) or None
+        return self._get_obs()
+    
+    def step(self, action):
+        done = False
+        reward = 0.0
+        prev_position = self.position
+        
+        # decode action
+        if action == self.n_strikes * self.n_types:
+            self.position = None  # flat
         else:
-          self.cash -= error_order_penalty
-          self.current_state[9] = self.cash
-        for i in range(len(self.positions)):
-          if self.positions[i][0] == 'CALL':
-            self.unrealised = today[2] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-          elif self.positions[i][0] == 'PUT':
-            self.unrealised = today[3] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-    elif action == 2:
-      if not any(pos[0] == 'CALL' for pos in self.positions) and not any(pos[0] == 'PUT' for pos in self.positions):
-        self.positions.append(('PUT', float(today[3])))
-      else:
-        self.cash -= error_order_penalty
-        self.current_state[9] = self.cash
-        for i in range(len(self.positions)):
-          if self.positions[i][0] == 'CALL':
-            self.unrealised = today[2] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-          elif self.positions[i][0] == 'PUT':
-            self.unrealised = today[3] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-    elif action == 3:
-      if any(pos[0] == 'PUT' for pos in self.positions):
-        for pos in self.positions[:]:
-          if pos[0] == 'PUT':
-            reward = today[3] - pos[1]
-            self.cash += reward - txn_cost
-            self.positions.remove(pos)
-            self.current_state[9] = self.cash
-            self.current_state[8] = 0.0
-            #break
-      else:
-        self.cash -= error_order_penalty
-        self.current_state[9] = self.cash
-        for i in range(len(self.positions)):
-          if self.positions[i][0] == 'CALL':
-            self.unrealised = today[2] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-          elif self.positions[i][0] == 'PUT':
-            self.unrealised = today[3] - self.positions[i][1]
-            self.current_state[8] = self.unrealised
-    elif action == 4:
-      for i in range(len(self.positions)):
-        if self.positions[i][0] == 'CALL':
-          self.unrealised = today[2] - self.positions[i][1]
-          self.current_state[8] = self.unrealised
-        elif self.positions[i][0] == 'PUT':
-          self.unrealised = today[3] - self.positions[i][1]
-          self.current_state[8] = self.unrealised
-    final_reward = (self.unrealised * self.unrealised_w) + self.cash
-    self.current_state = [float(x) for x in self.current_state]
-    return self.current_state, final_reward, False, {}
+            strike_idx = action // self.n_types
+            type_idx = action % self.n_types
+            self.position = (strike_idx, type_idx)
+        
+        # compute reward
+        if prev_position is not None:
+            prev_price = self._get_price(self.t-1, *prev_position)
+            curr_price = self._get_price(self.t, *prev_position)
+            reward += curr_price - prev_price
+        
+        if prev_position != self.position and prev_position is not None:
+            reward -= self.transaction_cost
+        self.cum_pnl +=reward
+        
+        self.t += 1
+        # advance time
+        if self.t >= len(self.dataframes):
+            done = True
+            next_obs = self._get_obs(last=True)
+        else:
+            next_obs = self._get_obs()
+        return next_obs, reward, done, {}
+    
+    def _get_obs(self, last=False):
+        t_idx = self.t
+        if last:
+            t_idx = self.t - 1
+        df = self.dataframes[t_idx]
+        S = df['underlying'].iloc[0]
+        
+        obs = np.zeros((self.n_strikes, self.n_types, 3), dtype=np.float32)
+        for _, row in df.iterrows():
+            i = self.strike_to_idx[row['strike']]
+            ln_m = np.log(S / row['strike'])
+            obs[i, 0, :] = [ln_m, row['call'], self.cum_pnl]
+            obs[i, 1, :] = [ln_m, row['put'], self.cum_pnl]
+        return obs
+    
+    def _get_price(self, t, strike_idx, type_idx):
+        df = self.dataframes[t]
+        strike = self.strikes[strike_idx]
+        row = df[df['strike'] == strike]
+        if type_idx == 0:
+            return row['call'].values[0]
+        else:
+            return row['put'].values[0]
+
+class PolicyNet(nn.Module):
+    def __init__(self, input_dim, output_dim):
+        super().__init__()
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, 128),
+            nn.ReLU(),
+            nn.Linear(128, output_dim),
+            nn.Softmax(dim=-1)  # outputs probabilities over actions
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class Brain:
+  def __init__(self, state_dim, action_dim, lr=1e-3):
+        self.policy_net = PolicyNet(state_dim, action_dim)
+        self.optimizer = torch.optim.Adam(self.policy_net.parameters(), lr=lr)
+
+  def elite_trajectory(self, experiences):
+      total_rewards = [[i, sum([exp[2] for exp in single_experience])] for i, single_experience in enumerate(experiences)]
+      best_idx = max(total_rewards, key=lambda x: x[1])[0]
+      return experiences[best_idx]
+
+  def compile(self, experience_universe, gamma=0.99):
+    experiences = self.elite_trajectory(experience_universe)
+    T = len(experiences)
+    discounted_rewards = [0] * T
+    G = 0
+    for t in reversed(range(T)):
+        _, _, reward, _, _ = experiences[t]
+        G = reward + gamma * G
+        discounted_rewards[t] = G
+    training_data = []
+    for i, exp in enumerate(experiences):
+        state, action, _, _, _ = exp
+        training_data.append((state, action, discounted_rewards[i]))
+    return training_data
+
+num_generations = 10
+env = Wallstreet(input_data)
+state_dim = env.n_strikes * env.n_types * 3
+action_dim = env.action_space.n
+agent = Brain(state_dim, action_dim)
+exp_directory = []
+
+for gen in range(num_generations):
+    state = env.reset().astype(np.float32)
+    done = False
+    experiences = []
+
+    while not done:
+        state_tensor = torch.tensor(state.reshape(-1), dtype=torch.float32)
+        
+        if gen == 0:
+            action = np.random.randint(env.action_space.n)
+        else:
+            with torch.no_grad():
+                #print(state_tensor)
+                action_probs = agent.policy_net(state_tensor)
+                action_dist = torch.distributions.Categorical(action_probs)
+                action = action_dist.sample().item()
+        
+        next_state, reward, done, _ = env.step(action)
+        experiences.append([state, action, reward, next_state, done])
+        state = next_state
+
+    exp_directory.append(experiences)
+    training_data = agent.compile(exp_directory)
+    Gs = np.array([G for _, _, G in training_data], dtype=np.float32)
+    Gs = (Gs - Gs.mean()) / (Gs.std() + 1e-8)
+    training_data = [(state, action, Gs[i]) for i, (state, action, G) in enumerate(training_data)]
+    for state, action, G in training_data:
+        state_tensor = torch.tensor(state.reshape(-1), dtype=torch.float32)
+        action_probs = agent.policy_net(state_tensor)
+        log_prob = torch.log(action_probs[action])
+        loss = -log_prob * G
+
+        agent.optimizer.zero_grad()
+        loss.backward()
+        agent.optimizer.step()
+
+    avg_reward = sum([exp[2] for exp in experiences]) / len(experiences)
+    #print(f"Generation {gen}, Average Reward: {avg_reward}")
